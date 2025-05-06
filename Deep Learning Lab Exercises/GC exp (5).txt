@@ -1,0 +1,104 @@
+
+import tensorflow as tf
+import tensorflow.keras.layers as tfl
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import datetime
+import scipy.io
+import tarfile
+import urllib.request
+
+# Download and extract dataset manually
+url = "https://data.vision.ee.ethz.ch/cvl/rrothe/imdb-wiki/static/wiki_crop.tar"
+file_path = tf.keras.utils.get_file("wiki_crop.tar", origin=url, extract=False)
+
+# Extract using tarfile
+with tarfile.open(file_path, "r:") as tar:
+    tar.extractall(path=os.path.dirname(file_path))
+
+# Dataset path
+dataset_dir = os.path.join(os.path.dirname(file_path), 'wiki_crop')
+
+# Load .mat file
+mat = scipy.io.loadmat(os.path.join(dataset_dir, 'wiki.mat'))
+
+# Extract age labels
+dob = np.vectorize(lambda x: datetime.datetime.fromordinal(x).year)(
+    mat["wiki"]["dob"][0][0][0]
+)
+photo_taken = mat["wiki"]["photo_taken"][0][0][0]
+age = (photo_taken - dob).astype(np.float32)
+
+# File paths
+file_path = np.vectorize(lambda x: os.path.join(dataset_dir, x[0]))(
+    mat["wiki"]["full_path"][0][0][0]
+)
+
+# Build TensorFlow dataset
+file_age_ds = tf.data.Dataset.from_tensor_slices((file_path, age))
+
+def parse_function(filename, label):
+    image_string = tf.io.read_file(filename)
+    image_decoded = tf.io.decode_jpeg(image_string, channels=1)
+    image = tf.image.resize(image_decoded, [256, 256])
+    return image, tf.expand_dims(label, 0)
+
+image_age_ds = file_age_ds.map(parse_function).shuffle(seed=2, buffer_size=64)
+
+# Split dataset
+dataset_size = image_age_ds.cardinality().numpy()
+AUTOTUNE = tf.data.AUTOTUNE
+train_ds = image_age_ds.take(int(dataset_size * 0.6)).batch(32).prefetch(AUTOTUNE)
+val_ds = image_age_ds.skip(int(dataset_size * 0.6)).take(int(dataset_size * 0.2)).batch(32).prefetch(AUTOTUNE)
+test_ds = image_age_ds.skip(int(dataset_size * 0.8)).batch(32).prefetch(AUTOTUNE)
+
+# Define model
+model = tf.keras.Sequential([
+    tfl.Conv2D(32, (7, 7), padding="valid", activation="relu", input_shape=(256, 256, 1)),
+    tfl.MaxPool2D((4, 4), strides=4),
+    tfl.Conv2D(64, (3, 3), padding="valid", activation="relu"),
+    tfl.MaxPool2D((4, 4), strides=4),
+    tfl.Conv2D(128, (3, 3), padding="valid", activation="relu"),
+    tfl.MaxPool2D((2, 2), strides=2),
+    tfl.Conv2D(256, (1, 1), padding="valid", activation="relu"),
+    tfl.MaxPool2D((2, 2), strides=2),
+    tfl.Flatten(),
+    tfl.Dense(64, activation="relu"),
+    tfl.Dense(1)
+])
+
+model.summary()
+
+# Compile
+model.compile(optimizer='adam',
+              loss=tf.keras.losses.MeanAbsoluteError(),
+              metrics=['MAE'])
+
+# Train
+model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=3,
+    callbacks=[tf.keras.callbacks.TensorBoard(log_dir="logs")]
+)
+
+# Evaluate
+loss, accuracy = model.evaluate(test_ds)
+print("Loss:", loss)
+print("MAE:", accuracy)
+
+# Visualization
+image_batch, label_batch = next(iter(val_ds))
+predictions = tf.squeeze(model(image_batch))
+label_batch = tf.squeeze(label_batch)
+
+plt.figure(figsize=(12, 12))
+plt.suptitle("Inference")
+for i in range(9):
+    plt.subplot(3, 3, i + 1)
+    plt.title(f"True: {label_batch[i]:.0f}, Pred: {predictions[i]:.0f}")
+    plt.imshow(tf.squeeze(image_batch[i]), cmap='gray')
+    plt.axis("off")
+plt.tight_layout()
+plt.show()

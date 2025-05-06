@@ -1,0 +1,93 @@
+
+
+import tensorflow as tf
+import tensorflow.keras.layers as tfl
+from tensorflow.keras.datasets import cifar10
+import matplotlib.pyplot as plt
+
+# Load the dataset
+(train_images, train_labels), (test_images, test_labels) = cifar10.load_data()
+
+# Split the training data into training and validation sets
+split = int(train_images.shape[0] * 0.8)
+val_images, val_labels = train_images[split:], train_labels[split:]
+train_images, train_labels = train_images[:split], train_labels[:split]
+
+# Data augmentation
+data_augmentation = tf.keras.Sequential([
+    tfl.Rescaling(1./255),
+    tfl.RandomFlip(mode="horizontal"),
+    tfl.RandomRotation(factor=0.1),
+    tfl.RandomContrast(factor=(0.2, 0.9)),
+    tfl.RandomZoom(height_factor=(0.1, 0.3))
+])
+
+def preprocess(x, y):
+    return data_augmentation(x), tf.one_hot(tf.squeeze(y), 10)
+
+# Create TensorFlow datasets
+train_ds = tf.data.Dataset.from_tensor_slices((train_images, train_labels)).map(preprocess).batch(64)
+val_ds = tf.data.Dataset.from_tensor_slices((val_images, val_labels)).map(preprocess).batch(64)
+test_ds = tf.data.Dataset.from_tensor_slices((test_images, test_labels)).map(preprocess).batch(64)
+
+
+
+# Load the pre-trained VGG19 model
+base_model = tf.keras.applications.VGG19(include_top=False, weights="imagenet", input_shape=(32, 32, 3))
+
+# Freeze the early layers of the base model
+for layer in base_model.layers[:-5]:
+    layer.trainable = False
+
+
+
+# Create the final model
+model = tf.keras.Sequential([
+    base_model,
+    tfl.Flatten(),
+    tfl.Dense(256, activation="relu"),
+    tfl.Dense(128, activation="relu"),
+    tfl.Dense(64, activation="relu"),
+    tfl.Dense(10, activation="softmax")
+])
+
+# Compile the model
+model.compile(
+    optimizer='adam',
+    loss=tf.keras.losses.CategoricalCrossentropy(),
+    metrics=['accuracy']
+)
+
+# Train the model
+model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=50,
+    callbacks=[
+        tf.keras.callbacks.TensorBoard(log_dir="logs")
+    ]
+)
+
+# Evaluate the model
+loss, accuracy = model.evaluate(test_ds)
+print("Loss:", loss)
+print("Accuracy:", accuracy)
+
+# Visualize predictions
+image, label = next(iter(val_ds))
+images = image.numpy()[:9]
+res = tf.argmax(model(image), axis=-1).numpy()
+label_numpy = tf.argmax(label, axis=-1).numpy()
+
+plt.figure(figsize=(10, 10))
+plt.suptitle("Inference")
+for i, (img, r) in enumerate(zip(images, res)):
+    plt.subplot(3, 3, i + 1)
+    plt.title(f"{label_numpy[i]}- {r}")
+    plt.imshow(img)
+    plt.axis("off")
+plt.show()
+
+# Load TensorBoard (if needed)
+# %load_ext tensorboard
+# %tensorboard --logdir logs
